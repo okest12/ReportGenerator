@@ -5,8 +5,28 @@ import xlrd
 import win32com
 from win32com.client import Dispatch
 from PyQt5.QtGui import QTextCursor
+from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QWidget, QApplication, QGroupBox, QPushButton, QLabel, QHBoxLayout, QVBoxLayout, \
     QGridLayout, QLineEdit, QTextEdit, QFileDialog, QMessageBox, QMainWindow
+
+key_word = r'国锐审字[2020]'
+percentage_tags = ['S4D27', 'S3H27', 'S3H28', 'S3H29', 'S3H30', 'S3H31']
+text_tags = []
+
+
+# ctype : 0 empty, 1 string, 2 number, 3 date, 4 boolean, 5 error, 6 blank
+def format_value(tag, value, c_type):
+    ret = 0
+    if 1 == c_type:
+        ret = value
+    elif 2 == c_type:
+        if tag in percentage_tags:
+            ret = '{:.2%}'.format(value)
+        elif tag in text_tags:
+            ret = value
+        else:
+            ret = format(value, ',')
+    return ret
 
 
 def get_tags(doc):
@@ -17,7 +37,10 @@ def get_tags(doc):
         for row in table.Rows:
             for cell in row.Cells:
                 text += cell.Range.text
-    return re.findall('S[0-9]+[A-Z][0-9]+', text)
+    if key_word not in text:
+        return None
+    else:
+        return re.findall('S[0-9]+[A-Z][0-9]+', text)
 
 
 def split_tag(tag):
@@ -38,10 +61,10 @@ def get_tag_values(book, tags):
     for tag in tags:
         s, c, r = split_tag(tag)
         sheet = book.sheets()[s]
-        nrows = sheet.nrows
-        ncols = sheet.ncols
-        if r < nrows and c < ncols:
-            tag_value_dict[tag] = sheet.cell(r, c).value
+        n_rows = sheet.nrows
+        n_cols = sheet.ncols
+        if r < n_rows and c < n_cols:
+            tag_value_dict[tag] = format_value(tag, sheet.cell(r, c).value, sheet.cell(r, c).ctype)
         else:
             tag_value_dict[tag] = None
     return tag_value_dict
@@ -63,11 +86,11 @@ def replace_doc(word_app, tag_value_dict):
     # 2--替换个数（全部替换）
     result = ""
     for tag, value in tag_value_dict.items():
-        if value:
-            print(tag, ":", value)
-            word_app.Selection.Find.Execute(tag, False, False, False, False, False, True, 1, True, value, 2)
-        else:
+        if value is None:
             result += "从数据文件中找不到:{}\n".format(tag)
+            value = 0
+        word_app.Selection.Find.Execute(tag, False, False, False, False, False, True, 1, True, value, 2)
+
     return result
 
 
@@ -99,6 +122,7 @@ class ReportGenerator(QWidget):
         self.submit_btn = QPushButton('生成报告')
         self.submit_btn.setStyleSheet("QPushButton{padding:20px 4px}")
         self.res_teatarea = QTextEdit()
+        self.setWindowState(Qt.WindowMaximized)
         self.init_ui()
 
     def init_ui(self):
@@ -126,7 +150,7 @@ class ReportGenerator(QWidget):
         layout.addWidget(self.submit_btn, 3, 0, 1, 3)
         layout.setColumnStretch(1, 10)
         self.gridGroupBox.setLayout(layout)
-        self.setWindowTitle('报告生成器')
+        self.setWindowTitle('国锐信达税务审计报告生成器')
 
     def create_form_group_box(self):
         layout = QGridLayout()
@@ -167,7 +191,6 @@ class ReportGenerator(QWidget):
 
         new_file = template_file[:-5]
         new_file += "_new.docx"
-        self.res_teatarea.insertPlainText("结果文件:{}\n".format(new_file))
 
         word_app = win32com.client.Dispatch('Word.Application')
         word_app.Visible = 0
@@ -175,15 +198,17 @@ class ReportGenerator(QWidget):
         doc = word_app.Documents.Open(template_file)
         tags = get_tags(doc)
 
-        book = xlrd.open_workbook(data_file)
-        tag_value_dict = get_tag_values(book, tags)
-        result = replace_doc(word_app, tag_value_dict)
-        doc.SaveAs(new_file)
+        if not tags:
+            show_msg('错误', '模版文件不符合规则！')
+        else:
+            book = xlrd.open_workbook(data_file, formatting_info=True)
+            tag_value_dict = get_tag_values(book, tags)
+            result = replace_doc(word_app, tag_value_dict)
+            doc.SaveAs(new_file)
+            self.res_teatarea.insertPlainText("报告完成:{}\n".format(new_file))
+            self.res_teatarea.insertPlainText(result)
         word_app.Documents.Close()
         word_app.Quit()
-
-        self.res_teatarea.insertPlainText("报告完成完成\n")
-        self.res_teatarea.insertPlainText(result)
 
 
 if __name__ == '__main__':
