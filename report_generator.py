@@ -2,41 +2,58 @@ import os
 import sys
 import re
 import xlrd
-import win32com
+from hashlib import md5
 from win32com.client import Dispatch
 from PyQt5.QtGui import QTextCursor
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QWidget, QApplication, QGroupBox, QPushButton, QLabel, QHBoxLayout, QVBoxLayout, \
     QGridLayout, QLineEdit, QTextEdit, QFileDialog, QMessageBox, QMainWindow
 
-key_word = r'国锐审字[2020]'
+key_word = r'XX审字[2020]'
+tag_md5 = r'433dff137657d6f9971f75fef4877f08'
+#key_word = r'国锐审字[2020]'
+#tag_md5 = r'3953cf4ab9b5d6a25f715f62030b94ba'
 percentage_tags = ['S4D27', 'S3H27', 'S3H28', 'S3H29', 'S3H30', 'S3H31']
-text_tags = []
+form_tags = ['S2C04', 'S2C05', 'S2C06', 'S2C07', 'S2C08', 'S2C09', 'S2C10', 'S2C11', 'S2C12', 'S2C13', 'S2C14', 'S2C15',
+             'S2C16', 'S2C17', 'S2C18', 'S2C19', 'S2C20', 'S2C21', 'S2C22', 'S2C23', 'S2C24', 'S2C25', 'S2C26', 'S2C27',
+             'S2C28', 'S2C29', 'S2C30', 'S2C31', 'S2C32', 'S2C33', 'S2C34', 'S2C35', 'S2C36', 'S2C37', 'S2C38', 'S2C39',
+             'S2C40']
+company_name_tag = 'S1C14'
 
 
-# ctype : 0 empty, 1 string, 2 number, 3 date, 4 boolean, 5 error, 6 blank
+# c_type : 0 empty, 1 string, 2 number, 3 date, 4 boolean, 5 error, 6 blank
 def format_value(tag, value, c_type):
-    ret = 0
+    ret = None
     if 1 == c_type:
-        ret = value
+        ret = value.strip()
     elif 2 == c_type:
         if tag in percentage_tags:
             ret = '{:.2%}'.format(value)
-        elif tag in text_tags:
-            ret = value
-        else:
+        elif isinstance(value, float):
             ret = format(value, ',')
+        else:
+            ret = value
+    return ret
+
+
+def check_tag(tags):
+    ret = False
+    if tags:
+        tag_str = ','.join(tags)
+        # print(md5(tag_str.encode(encoding='UTF-8')).hexdigest())
+        if tag_md5 == md5(tag_str.encode(encoding='UTF-8')).hexdigest():
+            ret = True
     return ret
 
 
 def get_tags(doc):
     text = ''
-    for para in doc.Paragraphs:
-        text += para.Range.text
     for table in doc.Tables:
         for row in table.Rows:
             for cell in row.Cells:
-                text += cell.Range.text
+                text += cell.Range()
+    for para in doc.Paragraphs:
+        text += para.Range()
     if key_word not in text:
         return None
     else:
@@ -48,26 +65,35 @@ def split_tag(tag):
     return int(match.group(1)) - 1, ord(match.group(2)) - ord('A'), int(match.group(3)) - 1 if match else None
 
 
-def get_tag_values1(tags):
-    tag_value_dict = {}
-    for tag in tags:
-        s, c, r = split_tag(tag)
-        tag_value_dict[tag] = "S{}{}{}".format(s + 2, c, r)
-    return tag_value_dict
-
-
 def get_tag_values(book, tags):
     tag_value_dict = {}
+    form_index = 1
     for tag in tags:
         s, c, r = split_tag(tag)
         sheet = book.sheets()[s]
         n_rows = sheet.nrows
         n_cols = sheet.ncols
+        tag_value_dict[tag] = None
         if r < n_rows and c < n_cols:
-            tag_value_dict[tag] = format_value(tag, sheet.cell(r, c).value, sheet.cell(r, c).ctype)
-        else:
-            tag_value_dict[tag] = None
+            if tag in form_tags:
+                if r'√' == sheet.cell(r, c).value:
+                    tag_value_dict[tag] = r'{}.《{}》（{}）'.format(form_index, sheet.cell(r, 1).value.strip(),
+                                                                sheet.cell(r, 0).value)
+                    form_index += 1
+            else:
+                tag_value_dict[tag] = format_value(tag, sheet.cell(r, c).value, sheet.cell(r, c).ctype)
     return tag_value_dict
+
+
+def delete_line(word_app, tag):
+    # select a Text
+    word_app.Selection.Find.Execute(tag)
+    #  extend it to end
+    word_app.Selection.EndKey(Unit=5, Extend=1)  # win32com.client.constants.wdLine, win32com.client.constants.wdExtend
+    # check what has been selected
+    word_app.Selection.Range()
+    # and then delete it
+    word_app.Selection.Delete()
 
 
 def replace_doc(word_app, tag_value_dict):
@@ -86,11 +112,14 @@ def replace_doc(word_app, tag_value_dict):
     # 2--替换个数（全部替换）
     result = ""
     for tag, value in tag_value_dict.items():
+        result += "{}:{}\n".format(tag, value)
         if value is None:
-            result += "从数据文件中找不到:{}\n".format(tag)
-            value = 0
+            if tag in form_tags:
+                delete_line(word_app, tag)
+                continue
+            else:
+                value = 0
         word_app.Selection.Find.Execute(tag, False, False, False, False, False, True, 1, True, value, 2)
-
     return result
 
 
@@ -150,7 +179,7 @@ class ReportGenerator(QWidget):
         layout.addWidget(self.submit_btn, 3, 0, 1, 3)
         layout.setColumnStretch(1, 10)
         self.gridGroupBox.setLayout(layout)
-        self.setWindowTitle('国锐信达税务审计报告生成器')
+        self.setWindowTitle('企业所得税审核报告生成器')
 
     def create_form_group_box(self):
         layout = QGridLayout()
@@ -189,21 +218,21 @@ class ReportGenerator(QWidget):
         else:
             self.res_teatarea.insertPlainText("数据文件:{}\n".format(data_file))
 
-        new_file = template_file[:-5]
-        new_file += "_new.docx"
-
-        word_app = win32com.client.Dispatch('Word.Application')
+        word_app = Dispatch('Word.Application')
         word_app.Visible = 0
         word_app.DisplayAlerts = 0
         doc = word_app.Documents.Open(template_file)
         tags = get_tags(doc)
 
-        if not tags:
+        if not check_tag(tags):
             show_msg('错误', '模版文件不符合规则！')
         else:
             book = xlrd.open_workbook(data_file, formatting_info=True)
             tag_value_dict = get_tag_values(book, tags)
             result = replace_doc(word_app, tag_value_dict)
+
+            (file_path, _) = os.path.split(template_file)
+            new_file = '{}\\2019年企业所得税审核报告及说明_{}.docx'.format(file_path, tag_value_dict[company_name_tag])
             doc.SaveAs(new_file)
             self.res_teatarea.insertPlainText("报告完成:{}\n".format(new_file))
             self.res_teatarea.insertPlainText(result)
