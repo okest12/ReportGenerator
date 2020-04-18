@@ -2,6 +2,7 @@ import os
 import sys
 import re
 import xlrd
+import datetime
 from hashlib import md5
 from win32com.client import Dispatch
 from PyQt5.QtGui import QTextCursor
@@ -9,10 +10,7 @@ from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QWidget, QApplication, QGroupBox, QPushButton, QLabel, QHBoxLayout, QVBoxLayout, \
     QGridLayout, QLineEdit, QTextEdit, QFileDialog, QMessageBox, QMainWindow
 
-key_word = r'XX审字[2020]'
-tag_md5 = r'433dff137657d6f9971f75fef4877f08'
-#key_word = r'国锐审字[2020]'
-#tag_md5 = r'3953cf4ab9b5d6a25f715f62030b94ba'
+integer_tags = ['S3F04', 'S3L05', 'S3F06', 'S3F07', 'S3H30', 'S3H31']
 percentage_tags = ['S4D27', 'S3H27', 'S3H28', 'S3H29', 'S3H30', 'S3H31']
 form_tags = ['S2C04', 'S2C05', 'S2C06', 'S2C07', 'S2C08', 'S2C09', 'S2C10', 'S2C11', 'S2C12', 'S2C13', 'S2C14', 'S2C15',
              'S2C16', 'S2C17', 'S2C18', 'S2C19', 'S2C20', 'S2C21', 'S2C22', 'S2C23', 'S2C24', 'S2C25', 'S2C26', 'S2C27',
@@ -21,26 +19,11 @@ form_tags = ['S2C04', 'S2C05', 'S2C06', 'S2C07', 'S2C08', 'S2C09', 'S2C10', 'S2C
 company_name_tag = 'S1C14'
 
 
-# c_type : 0 empty, 1 string, 2 number, 3 date, 4 boolean, 5 error, 6 blank
-def format_value(tag, value, c_type):
-    ret = None
-    if 1 == c_type:
-        ret = value.strip()
-    elif 2 == c_type:
-        if tag in percentage_tags:
-            ret = '{:.2%}'.format(value)
-        elif isinstance(value, float):
-            ret = format(value, ',')
-        else:
-            ret = value
-    return ret
-
-
-def check_tag(tags):
+def check_tag(tags, key_file):
     ret = False
-    if tags:
-        tag_str = ','.join(tags)
-        # print(md5(tag_str.encode(encoding='UTF-8')).hexdigest())
+    with open(key_file) as file_object:
+        tag_md5 = file_object.readline().strip()
+        tag_str = ','.join(tags) + str(datetime.datetime.now().year)
         if tag_md5 == md5(tag_str.encode(encoding='UTF-8')).hexdigest():
             ret = True
     return ret
@@ -54,10 +37,12 @@ def get_tags(doc):
                 text += cell.Range()
     for para in doc.Paragraphs:
         text += para.Range()
-    if key_word not in text:
-        return None
-    else:
-        return re.findall('S[0-9]+[A-Z][0-9]+', text)
+
+    tags = []
+    it = re.finditer(r'(S\d+[A-Z]\d{2}(\+S\d+[A-Z]\d{2})*)', text)
+    for tag in it:
+        tags.append(tag.group(0))
+    return tags
 
 
 def split_tag(tag):
@@ -65,23 +50,61 @@ def split_tag(tag):
     return int(match.group(1)) - 1, ord(match.group(2)) - ord('A'), int(match.group(3)) - 1 if match else None
 
 
+def format_number(tag, value):
+    if tag in percentage_tags:
+        ret = '{:.2%}'.format(value)
+    elif tag in integer_tags:
+        ret = int(value)
+    else:
+        ret = format(value, ',.2f')
+    return ret
+
+
+# c_type : 0 empty, 1 string, 2 number, 3 date, 4 boolean, 5 error, 6 blank
+def get_tag_value(book, tag, need_format):
+    s, c, r = split_tag(tag)
+    sheet = book.sheets()[s]
+    if r < sheet.nrows and c < sheet.ncols:
+        value = sheet.cell(r, c).value
+        c_type = sheet.cell(r, c).ctype
+        if not need_format:
+            return value
+        elif 1 == c_type:
+            return value.strip()
+        elif 2 == c_type:
+            return format_number(tag, value)
+
+
+def get_form_tag_value(book, tag, form_index):
+    s, c, r = split_tag(tag)
+    sheet = book.sheets()[s]
+    if r < sheet.nrows and c < sheet.ncols and r'√' == sheet.cell(r, c).value:
+        return r'{}.《{}》（{}）'.format(form_index, sheet.cell(r, 1).value.strip(), sheet.cell(r, 0).value)
+
+
+def get_add_tag_value(book, tag):
+    add_tag_value = 0.0
+    for sub_tag in tag.split('+'):
+        value = get_tag_value(book, sub_tag, False)
+        if isinstance(value, float):
+            add_tag_value += value
+        else:
+            print('{} in {} is not a number or not found, set to 0'.format(sub_tag, tag))
+    return format(add_tag_value, ',.2f')
+
+
 def get_tag_values(book, tags):
     tag_value_dict = {}
     form_index = 1
     for tag in tags:
-        s, c, r = split_tag(tag)
-        sheet = book.sheets()[s]
-        n_rows = sheet.nrows
-        n_cols = sheet.ncols
-        tag_value_dict[tag] = None
-        if r < n_rows and c < n_cols:
-            if tag in form_tags:
-                if r'√' == sheet.cell(r, c).value:
-                    tag_value_dict[tag] = r'{}.《{}》（{}）'.format(form_index, sheet.cell(r, 1).value.strip(),
-                                                                sheet.cell(r, 0).value)
-                    form_index += 1
-            else:
-                tag_value_dict[tag] = format_value(tag, sheet.cell(r, c).value, sheet.cell(r, c).ctype)
+        if tag in form_tags:
+            tag_value_dict[tag] = get_form_tag_value(book, tag, form_index)
+            if tag_value_dict[tag] is not None:
+                form_index += 1
+        elif '+' in tag:
+            tag_value_dict[tag] = get_add_tag_value(book, tag)
+        else:
+            tag_value_dict[tag] = get_tag_value(book, tag, True)
     return tag_value_dict
 
 
@@ -218,24 +241,33 @@ class ReportGenerator(QWidget):
         else:
             self.res_teatarea.insertPlainText("数据文件:{}\n".format(data_file))
 
+        key_file = r'key.txt'
+        if not os.path.exists(key_file):
+            (template_path, _) = os.path.split(template_file)
+            key_file = '{}\\{}'.format(template_path, key_file)
+            if not os.path.exists(key_file):
+                show_msg('错误', '找不到key文件！')
+                return False
+
         word_app = Dispatch('Word.Application')
         word_app.Visible = 0
         word_app.DisplayAlerts = 0
         doc = word_app.Documents.Open(template_file)
         tags = get_tags(doc)
 
-        if not check_tag(tags):
-            show_msg('错误', '模版文件不符合规则！')
-        else:
+        if check_tag(tags, key_file):
             book = xlrd.open_workbook(data_file, formatting_info=True)
             tag_value_dict = get_tag_values(book, tags)
             result = replace_doc(word_app, tag_value_dict)
 
-            (file_path, _) = os.path.split(template_file)
-            new_file = '{}\\2019年企业所得税审核报告及说明_{}.docx'.format(file_path, tag_value_dict[company_name_tag])
+            (data_path, _) = os.path.split(data_file)
+            new_file = '{}/2019年企业所得税审核报告及说明_{}.docx'.format(data_path, tag_value_dict[company_name_tag])
             doc.SaveAs(new_file)
             self.res_teatarea.insertPlainText("报告完成:{}\n".format(new_file))
             self.res_teatarea.insertPlainText(result)
+        else:
+            show_msg('错误', '模版文件不符合规则！')
+
         word_app.Documents.Close()
         word_app.Quit()
 
